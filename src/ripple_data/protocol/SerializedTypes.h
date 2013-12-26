@@ -560,6 +560,10 @@ public:
     {
         return !mIsNegative && !isZero ();
     }
+    bool isLEZero () const
+    {
+        return mIsNegative || isZero ();
+    }
     bool isGEZero () const
     {
         return !mIsNegative;
