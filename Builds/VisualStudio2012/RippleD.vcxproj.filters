@@ -2925,6 +2925,12 @@
     <ClInclude Include="..\..\src\ripple_app\ledger\OrderBookIterator.h">
       <Filter>[2] Old Ripple\ripple_app\ledger</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\src\ripple_app\ledger\DirectoryEntryIterator.h">
+      <Filter>[2] Old Ripple\ripple_app\ledger</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\ripple_app\ledger\OrderBookIterator.h">
+      <Filter>[2] Old Ripple\ripple_app\ledger</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\src\ripple_app\peers\PeerSet.h">
       <Filter>[2] Old Ripple\ripple_app\peers</Filter>
     </ClInclude>
