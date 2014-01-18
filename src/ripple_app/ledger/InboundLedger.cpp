@@ -19,14 +19,21 @@
 
 SETUP_LOG (InboundLedger)
 
-// VFALCO TODO replace macros
-#define LA_DEBUG
-#define LEDGER_ACQUIRE_TIMEOUT      6000    // millisecond for each ledger timeout
-#define LEDGER_TIMEOUT_COUNT        10      // how many timeouts before we giveup
-#define LEDGER_TIMEOUT_AGGRESSIVE   6       // how many timeouts before we get aggressive
+enum
+{
+    // millisecond for each ledger timeout
+    ledgerAcquireTimeoutMillis = 6000
 
-InboundLedger::InboundLedger (clock_type& clock, uint256 const& hash, uint32 seq)
-    : PeerSet (clock, hash, LEDGER_ACQUIRE_TIMEOUT, false)
+    // how many timeouts before we giveup
+    ,ledgerTimeoutRetriesMax = 10
+
+    // how many timeouts before we get aggressive
+    ,ledgerBecomeAggressiveThreshold = 6
+};
+
+InboundLedger::InboundLedger (clock_type& clock, uint256 const& hash,
+    uint32 seq)
+    : PeerSet (clock, hash, ledgerAcquireTimeoutMillis, false)
     , mHaveBase (false)
     , mHaveState (false)
     , mHaveTransactions (false)
@@ -196,7 +203,7 @@ void InboundLedger::onTimer (bool wasProgress, ScopedLockType&)
         return;
     }
 
-    if (getTimeouts () > LEDGER_TIMEOUT_COUNT)
+    if (getTimeouts () > ledgerTimeoutRetriesMax)
     {
         if (mSeq != 0)
             WriteLog (lsWARNING, InboundLedger) << getTimeouts() << " timeouts for ledger " << mSeq;
@@ -376,7 +383,7 @@ void InboundLedger::trigger (Peer::ref peer)
     { // Be more aggressive if we've timed out at least once
         tmGL.set_querytype (protocol::qtINDIRECT);
 
-        if (!isProgress () && !mFailed && mByHash && (getTimeouts () > LEDGER_TIMEOUT_AGGRESSIVE))
+        if (!isProgress () && !mFailed && mByHash && (getTimeouts () > ledgerBecomeAggressiveThreshold))
         {
             std::vector<neededHash_t> need = getNeededHashes ();
 
@@ -644,9 +651,7 @@ void InboundLedger::filterNodes (std::vector<SHAMapNode>& nodeIDs, std::vector<u
 bool InboundLedger::takeBase (const std::string& data) // data must not have hash prefix
 {
     // Return value: true=normal, false=bad data
-#ifdef LA_DEBUG
     WriteLog (lsTRACE, InboundLedger) << "got base acquiring ledger " << mHash;
-#endif
 
     if (mComplete || mFailed || mHaveBase)
         return true;
