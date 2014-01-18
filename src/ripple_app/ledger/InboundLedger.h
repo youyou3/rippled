@@ -34,7 +34,7 @@ public:
     typedef std::pair < boost::weak_ptr<Peer>, boost::shared_ptr<protocol::TMLedgerData> > PeerDataPairType;
 
 public:
-    InboundLedger (clock_type& clock, uint256 const& hash, uint32 seq);
+    InboundLedger (uint256 const& hash, uint32 seq, clock_type& clock);
 
     ~InboundLedger ();
 
@@ -82,7 +82,7 @@ public:
 
     std::vector<neededHash_t> getNeededHashes ();
 
-    static void filterNodes (std::vector<SHAMapNode>& nodeIDs, std::vector<uint256>& nodeHashes,
+    void filterNodes (std::vector<SHAMapNode>& nodeIDs, std::vector<uint256>& nodeHashes,
                              std::set<SHAMapNode>& recentNodes, int max, bool aggressive);
 
     Json::Value getJson (int);
