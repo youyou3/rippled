@@ -459,6 +459,7 @@ public:
 
     // Node storage configuration
     uint32                      LEDGER_HISTORY;
+    uint32                      FETCH_DEPTH;
     int                         NODE_SIZE;
 
     // Client behavior

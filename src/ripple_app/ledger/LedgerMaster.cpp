@@ -424,6 +424,14 @@ public:
         return true;
     }
 
+    uint32 getEarliestFetch ()
+    {
+        uint32 e = getClosedLedger()->getLedgerSeq();
+        if (e > getConfig().FETCH_DEPTH)
+            e -= getConfig().FETCH_DEPTH;
+        return e;
+    }
+
     void tryFill (Job& job, Ledger::pointer ledger)
     {
         uint32 seq = ledger->getLedgerSeq ();
@@ -506,6 +514,7 @@ public:
             tmBH.set_query (true);
             tmBH.set_type (protocol::TMGetObjectByHash::otFETCH_PACK);
             tmBH.set_ledgerhash (nextLedger->getHash().begin (), 32);
+            tmBH.set_seq (nextLedger->getLedgerSeq() - 1);
             PackedMessage::pointer packet = boost::make_shared<PackedMessage> (tmBH, protocol::mtGET_OBJECTS);
 
             target->sendPacket (packet, false);

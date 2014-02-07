@@ -112,8 +112,8 @@ private:
     std::vector<uint8_t>                mReadbuf;
     std::list<PackedMessage::pointer>   mSendQ;
     PackedMessage::pointer              mSendingPacket;
-    protocol::TMStatusChange              mLastStatus;
-    protocol::TMHello                     mHello;
+    protocol::TMStatusChange            mLastStatus;
+    protocol::TMHello                   mHello;
 
     bool            m_remoteAddressSet;
     IPAddress      m_remoteAddress;
@@ -2150,6 +2150,13 @@ void PeerImp::getLedger (protocol::TMGetLedger & packet)
             return;
         }
 
+        uint32 early = getApp().getLedgerMaster().getEarliestFetch();
+        if (packet.has_ledgerseq () && (packet.ledgerseq() < early))
+        {
+            WriteLog (lsDEBUG, Peer) << "Peer requests ledger data that is too early";
+            return;
+        }
+
         // Figure out what ledger they want
         WriteLog (lsTRACE, Peer) << "Received request for ledger data " << getIP ();
         Ledger::pointer ledger;
@@ -2657,6 +2664,12 @@ void PeerImp::doFetchPack (const boost::shared_ptr<protocol::TMGetObjectByHash>&
     {
         WriteLog (lsWARNING, Peer) << "Peer requests fetch pack from open ledger: " << hash;
         charge (Resource::feeInvalidRequest);
+        return;
+    }
+
+    if (haveLedger->getLedgerSeq() < getApp().getLedgerMaster().getEarliestFetch())
+    {
+        WriteLog (lsWARNING, Peer) << "Peer requsts fetch pack that is too early";
         return;
     }
 
