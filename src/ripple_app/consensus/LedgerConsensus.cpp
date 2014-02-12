@@ -1446,8 +1446,8 @@ private:
         {
             // Don't advertise ledgers we're not willing to serve
             uint32 early = getApp().getLedgerMaster().getEarliestFetch ();
-            if (uMax < early)
-               uMax = early;
+            if (uMin < early)
+               uMin = early;
         }
         s.set_firstseq (uMin);
         s.set_lastseq (uMax);
