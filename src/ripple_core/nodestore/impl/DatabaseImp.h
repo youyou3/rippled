@@ -20,6 +20,9 @@
 #ifndef RIPPLE_NODESTORE_DATABASEIMP_H_INCLUDED
 #define RIPPLE_NODESTORE_DATABASEIMP_H_INCLUDED
 
+#include <thread>
+#include <condition_variable>
+
 namespace ripple {
 namespace NodeStore {
 
@@ -34,10 +37,24 @@ public:
     std::unique_ptr <Backend> m_backend;
     // Larger key/value storage, but not necessarily persistent.
     std::unique_ptr <Backend> m_fastBackend;
+
+    // Positive cache
     TaggedCache <uint256, NodeObject> m_cache;
+
+    // Negative cache
+    KeyCache <uint256> m_negCache;
+
+    // Read Items
+    std::mutex                m_readLock;
+    std::condition_variable   m_readCondVar;
+    std::set <uint256>        m_readSet;
+    uint256                   m_readLast;
+    std::vector <std::thread> m_readThreads;
+    bool                      m_readShut;
 
     DatabaseImp (std::string const& name,
                  Scheduler& scheduler,
+                 int readThreads,
                  std::unique_ptr <Backend> backend,
                  std::unique_ptr <Backend> fastBackend,
                  Journal journal)
@@ -47,11 +64,24 @@ public:
         , m_fastBackend (std::move (fastBackend))
         , m_cache ("NodeStore", cacheTargetSize, cacheTargetSeconds,
             get_seconds_clock (), LogPartition::getJournal <TaggedCacheLog> ())
+        , m_negCache ("NodeStore", get_seconds_clock (),
+            cacheTargetSize, cacheTargetSeconds)
+        , m_readShut (false)
     {
+        for (int i = 0; i < readThreads; ++i)
+            m_readThreads.push_back (std::thread (&DatabaseImp::threadEntry, this));
     }
 
     ~DatabaseImp ()
     {
+        {
+            std::unique_lock <std::mutex> lock (m_readLock);
+            m_readShut = true;
+            m_readCondVar.notify_all();
+        }
+
+        BOOST_FOREACH (std::thread& th, m_readThreads)
+            th.join ();
     }
 
     String getName () const
@@ -59,7 +89,23 @@ public:
         return m_backend->getName ();
     }
 
+
     //------------------------------------------------------------------------------
+
+    bool asyncFetch (uint256 const& hash, NodeObject::pointer& object)
+    {
+        object = m_cache.fetch (hash);
+        if (object || m_negCache.touch_if_exists (hash))
+            return true;
+
+        {
+            std::unique_lock <std::mutex> lock (m_readLock);
+            if (m_readSet.insert (hash).second)
+                m_readCondVar.notify_one ();
+        }
+
+        return false;
+    }
 
     NodeObject::Ptr fetch (uint256 const& hash)
     {
@@ -67,68 +113,65 @@ public:
         //
         NodeObject::Ptr obj = m_cache.fetch (hash);
 
+        if (obj != nullptr)
+            return obj;
+
+        if (m_negCache.touch_if_exists (hash))
+            return obj;
+
+        // Check the database(s).
+
+        bool foundInFastBackend = false;
+
+        // Check the fast backend database if we have one
+        //
+        if (m_fastBackend != nullptr)
+        {
+            obj = fetchInternal (*m_fastBackend, hash);
+
+            // If we found the object, avoid storing it again later.
+            if (obj != nullptr)
+                foundInFastBackend = true;
+        }
+
+        // Are we still without an object?
+        //
         if (obj == nullptr)
         {
-            // There's still a chance it could be in one of the databases.
-
-            bool foundInFastBackend = false;
-
-            // Check the fast backend database if we have one
+            // Yes so at last we will try the main database.
             //
-            if (m_fastBackend != nullptr)
-            {
-                obj = fetchInternal (*m_fastBackend, hash);
+            obj = fetchInternal (*m_backend, hash);
+        }
 
-                // If we found the object, avoid storing it again later.
-                if (obj != nullptr)
-                    foundInFastBackend = true;
-            }
+        if (obj == nullptr)
+        {
 
-            // Are we still without an object?
-            //
+            // Just in case a write occurred
+            obj = m_cache.fetch (hash);
+
             if (obj == nullptr)
             {
-                // Yes so at last we will try the main database.
-                //
-                {
-                    // Monitor this operation's load since it is expensive.
-                    //
-                    // VFALCO TODO Why is this an autoptr? Why can't it just be a plain old object?
-                    //
-                    // VFALCO NOTE Commented this out because it breaks the unit test!
-                    //
-                    //LoadEvent::autoptr event (getApp().getJobQueue ().getLoadEventAP (jtHO_READ, "HOS::retrieve"));
-
-                    obj = fetchInternal (*m_backend, hash);
-                }
-
-            }
-
-            // Did we finally get something?
-            //
-            if (obj != nullptr)
-            {
-                // Yes it so canonicalize. This solves the problem where
-                // more than one thread has its own copy of the same object.
-                //
-                m_cache.canonicalize (hash, obj);
-
-                if (! foundInFastBackend)
-                {
-                    // If we have a fast back end, store it there for later.
-                    //
-                    if (m_fastBackend != nullptr)
-                        m_fastBackend->store (obj);
-
-                    // Since this was a 'hard' fetch, we will log it.
-                    //
-                    WriteLog (lsTRACE, NodeObject) << "HOS: " << hash << " fetch: in db";
-                }
+                // We give up
+                m_negCache.insert (hash);
             }
         }
         else
         {
-            // found it!
+            // Ensure all threads get the same object
+            //
+            m_cache.canonicalize (hash, obj);
+
+            if (! foundInFastBackend)
+            {
+                 // If we have a fast back end, store it there for later.
+                //
+                if (m_fastBackend != nullptr)
+                    m_fastBackend->store (obj);
+
+                // Since this was a 'hard' fetch, we will log it.
+                //
+                WriteLog (lsTRACE, NodeObject) << "HOS: " << hash << " fetch: in db";
+            }
         }
 
         return obj;
@@ -168,30 +211,20 @@ public:
                 Blob& data,
                 uint256 const& hash)
     {
-        bool const keyFoundAndObjectCached = m_cache.refreshIfPresent (hash);
+        NodeObject::Ptr object = NodeObject::createObject (type, index, data, hash);
 
-        // VFALCO NOTE What happens if the key is found, but the object
-        //             fell out of the cache? We will end up passing it
-        //             to the backend anyway.
-        //
-        if (! keyFoundAndObjectCached)
-        {
         #if RIPPLE_VERIFY_NODEOBJECT_KEYS
-            assert (hash == Serializer::getSHA512Half (data));
+        assert (hash == Serializer::getSHA512Half (data));
         #endif
 
-            NodeObject::Ptr object = NodeObject::createObject (
-                type, index, data, hash);
+        m_cache.canonicalize (hash, object, true);
 
-            if (!m_cache.canonicalize (hash, object))
-            {
-                m_backend->store (object);
+        m_backend->store (object);
 
-                if (m_fastBackend)
-                    m_fastBackend->store (object);
-            }
+        m_negCache.erase (hash);
 
-        }
+        if (m_fastBackend)
+            m_fastBackend->store (object);
     }
 
     //------------------------------------------------------------------------------
@@ -205,11 +238,14 @@ public:
     {
         m_cache.setTargetSize (size);
         m_cache.setTargetAge (age);
+        m_negCache.setTargetSize (size);
+        m_negCache.setTargetAge (age);
     }
 
     void sweep ()
     {
         m_cache.sweep ();
+        m_negCache.sweep ();
     }
 
     int getWriteLoad ()
@@ -218,6 +254,37 @@ public:
     }
 
     //------------------------------------------------------------------------------
+
+    void threadEntry ()
+    {
+        Thread::setCurrentThreadName ("prefetch");
+        while (1)
+        {
+            uint256 hash;
+
+            {
+                std::unique_lock <std::mutex> lock (m_readLock);
+                while (!m_readShut && m_readSet.empty ())
+                    m_readCondVar.wait (lock);
+
+                if (m_readShut)
+                    break;
+                // Read in key order to make the back end more efficient
+                std::set <uint256>::iterator it = m_readSet.lower_bound (m_readLast);
+                if (it == m_readSet.end ())
+                    it = m_readSet.begin ();
+ 
+                hash = *it;
+                m_readSet.erase (it);
+                m_readLast = hash;
+            }
+ 
+            fetch (hash);
+         }
+     }
+
+    //------------------------------------------------------------------------------
+
 
     void visitAll (VisitCallback& callback)
     {
